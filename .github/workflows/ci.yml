@@ -1,0 +1,158 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly stress test, Monday 03:00 UTC
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      stress:
+        description: 'Also run the API stress test'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: true
+  # All jobs test a private copy of the app started in the job, never the public demo.
+  BASE_URL: http://localhost:4200
+  API_URL: http://localhost:8091
+  PERF_PROFILE: ci
+  K6_VERSION: '2.3.0'
+
+jobs:
+  quality:
+    name: Lint, types & format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run format:check
+
+  accessibility:
+    name: Accessibility (web + API)
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Pull the Playwright image
+        id: pw
+        run: |
+          image="mcr.microsoft.com/playwright:v$(node -p "require('@playwright/test/package.json').version")-noble"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          docker pull -q "$image"
+      - uses: ./.github/actions/start-toolshop
+      - name: Run Playwright + axe
+        run: |
+          docker run --rm --init --network host --ipc host \
+            -v "$PWD":"$PWD" -w "$PWD" -e CI -e BASE_URL -e API_URL \
+            "${{ steps.pw.outputs.image }}" npx playwright test
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: accessibility-report
+          path: playwright-report
+          retention-days: 14
+
+  perf-api:
+    name: API performance (k6 smoke + load)
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/start-toolshop
+        with:
+          with-ui: 'false'
+      - uses: grafana/setup-k6-action@v1
+        with:
+          k6-version: ${{ env.K6_VERSION }}
+      - run: mkdir -p reports
+      - name: Smoke
+        run: k6 run k6/api-smoke.ts
+      - name: Load
+        run: k6 run k6/api-load.ts
+        env:
+          # k6's built-in dashboard, saved as an HTML report with charts
+          K6_WEB_DASHBOARD: 'true'
+          K6_WEB_DASHBOARD_EXPORT: reports/api-load.html
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: k6-api-reports
+          path: reports
+          retention-days: 14
+
+  perf-web:
+    name: Web performance (k6 browser)
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/start-toolshop
+      - uses: grafana/setup-k6-action@v1
+        with:
+          k6-version: ${{ env.K6_VERSION }}
+      - run: mkdir -p reports
+      - name: Core Web Vitals
+        # The runner has Google Chrome installed; k6 browser finds it on its own.
+        run: k6 run k6/web-vitals.ts
+        env:
+          K6_WEB_DASHBOARD: 'true'
+          K6_WEB_DASHBOARD_EXPORT: reports/web-vitals.html
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: k6-web-reports
+          path: reports
+          retention-days: 14
+
+  stress:
+    name: API stress (k6)
+    if: github.event_name == 'schedule' || inputs.stress
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/start-toolshop
+        with:
+          with-ui: 'false'
+      - uses: grafana/setup-k6-action@v1
+        with:
+          k6-version: ${{ env.K6_VERSION }}
+      - run: mkdir -p reports
+      - name: Stress
+        run: k6 run k6/api-stress.ts
+        env:
+          K6_WEB_DASHBOARD: 'true'
+          K6_WEB_DASHBOARD_EXPORT: reports/api-stress.html
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: k6-stress-reports
+          path: reports
+          retention-days: 14

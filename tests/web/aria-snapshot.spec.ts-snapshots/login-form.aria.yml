@@ -1,0 +1,8 @@
+- text: Email address *
+- textbox "Email address *":
+    - /placeholder: Your email
+- text: Password *
+- textbox "Password *":
+    - /placeholder: Your password
+- button
+- button "Login"
