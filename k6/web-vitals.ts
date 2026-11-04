@@ -4,6 +4,7 @@ import { browser } from 'k6/browser';
 import exec from 'k6/execution';
 import http from 'k6/http';
 import { check } from 'k6';
+import { Counter } from 'k6/metrics';
 import { API_URL, BASE_URL, PROFILE } from './config.ts';
 import { summaryFor } from './lib/summary.ts';
 
@@ -14,9 +15,16 @@ const BUDGET =
     ? { lcp: 2500, fcp: 1800, ttfb: 800, cls: 0.1 }
     : { lcp: 6000, fcp: 4000, ttfb: 1500, cls: 0.1 };
 
+const ROUNDS = 5;
+
+// Thresholds on a metric with no data pass. This counter makes sure every page was
+// really measured in every round, so a broken page load can't hide behind a green run.
+const pagesMeasured = new Counter('pages_measured');
+
 // Each page gets its own limits, so a failure says which page it is.
 function pageThresholds(name: string) {
   return {
+    [`pages_measured{page:${name}}`]: [`count>=${ROUNDS}`],
     [`browser_web_vital_lcp{page:${name}}`]: [`p(75)<${BUDGET.lcp}`],
     [`browser_web_vital_fcp{page:${name}}`]: [`p(75)<${BUDGET.fcp}`],
     [`browser_web_vital_ttfb{page:${name}}`]: [`p(75)<${BUDGET.ttfb}`],
@@ -29,7 +37,7 @@ export const options = {
     pages: {
       executor: 'shared-iterations',
       vus: 1,
-      iterations: 5,
+      iterations: ROUNDS,
       options: { browser: { type: 'chromium' } },
     },
   },
@@ -48,18 +56,22 @@ export function setup() {
   return { productId: ids[0] };
 }
 
-// Opens one page in a fresh tab, waits for its key element, then closes the tab.
-// CLS is only final when the page is left, so the tab is closed before the tag changes.
+// Opens one page in its own browser context, waits for its key element, then closes it.
+// CLS is only final when the page is left, so it is closed before the tag changes.
+// k6 browser allows one context at a time, so each one must be closed before the next.
 async function measure(name: string, url: string, readySelector: string): Promise<void> {
   exec.vu.metrics.tags.page = name;
-  const page = await browser.newPage();
+  const context = await browser.newContext();
+  const page = await context.newPage();
   try {
     await page.goto(url, { waitUntil: 'load' });
     const ready = page.locator(readySelector).first();
     await ready.waitFor({ state: 'visible' });
     check(await ready.textContent(), { [`${name}: content shown`]: (t) => !!t?.trim() });
+    pagesMeasured.add(1);
   } finally {
     await page.close();
+    await context.close();
   }
 }
 
