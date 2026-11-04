@@ -123,6 +123,10 @@ jobs:
         env:
           K6_WEB_DASHBOARD: 'true'
           K6_WEB_DASHBOARD_EXPORT: reports/web-vitals.html
+          # Ubuntu 24.04 runners block the user namespaces Chrome's sandbox needs, so Chrome
+          # crashes on start. Fine to turn the sandbox off on a throwaway CI machine that
+          # only opens my own copy of the app; never done locally.
+          K6_BROWSER_ARGS: no-sandbox
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
