@@ -1,5 +1,5 @@
 import http from 'k6/http';
-import { check, group, sleep } from 'k6';
+import { check, group, sleep as pause } from 'k6';
 import { API_URL, SEEDED_USER } from '../config.ts';
 
 const SEARCH_TERMS = ['hammer', 'pliers', 'saw', 'drill', 'screwdriver'];
@@ -14,7 +14,10 @@ function pick<T>(items: T[]): T {
 }
 
 // A shopper looking around: list, open a product, search, look at categories.
-export function browseCatalogue(): void {
+// thinkTime adds pauses like a real person. Stress turns them off: there the arrival
+// rate sets the pace, and pauses only tie up virtual users (k6 then drops iterations).
+export function browseCatalogue(thinkTime = true): void {
+  const sleep = thinkTime ? pause : () => {};
   let productIds: string[] = [];
 
   group('list products', () => {
