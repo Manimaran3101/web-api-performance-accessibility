@@ -29,9 +29,10 @@ export const options = {
     http_req_failed: [{ threshold: 'rate<0.10', abortOnFail: true, delayAbortEval: '30s' }],
     // Reported so I can see how latency grows; the limit is loose on purpose.
     http_req_duration: ['p(95)<3000'],
-    // If k6 can't keep up, the test measured itself instead of the API.
-    dropped_iterations: ['count<100'],
   },
+  // dropped_iterations is shown in the summary but is not a pass/fail limit here: once the
+  // API slows down, k6 runs out of VUs and drops iterations. That is the result I want to
+  // see. (If it happens while responses are still fast, the test setup is the bottleneck.)
 };
 
 export function shoppers() {
